@@ -6,7 +6,7 @@ const sendEmail = require('./sendEmail'); // points to sendEmail function in sen
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-//const bcrypt = require('bcryptjs');
+const bcrypt = require('bcryptjs');
 
 const app = express();
 app.use(cors());
@@ -30,7 +30,7 @@ client.connect()
 
 // Route: /api/register
 app.post('/api/register', async (req, res) => {
-  const { FirstName, LastName, Username, Email, Password, CheckInFreq} = req.body;
+  const { FirstName, LastName, Username, Email, Password, CheckInFreq } = req.body;
 
   // Validate required fields
   if (!FirstName || !LastName || !Username || !Email || !Password || !CheckInFreq) {
@@ -58,6 +58,8 @@ app.post('/api/register', async (req, res) => {
     const status = "Active";
     const createdAt = new Date();
 
+    // Hash the password using bcryptjs
+    const hashedPassword = await bcrypt.hash(Password, 10); // 10 is the salt rounds
 
     // Create the new user document
     const newUser = {
@@ -66,75 +68,96 @@ app.post('/api/register', async (req, res) => {
       LastName,
       Username,
       Email,
-      Password, // ****** NEED TO HASH PASSWORD
+      Password: hashedPassword, // Store the hashed password
       CheckInFreq,
       Verified: false,
-      verificationCode, // temp code for email verification
+      verificationCode, // Temporary code for email verification
       lastLogin: lastLogin,
       status: status,
       createdAt: createdAt
     };
 
-    // insert the new user into the db
+    // Insert the new user into the database
     await db.collection('Users').insertOne(newUser);
 
-    // send verification email
+    // Send verification email
     await sendEmail(Email, 'Verify Your Account', `Your verification code is: ${verificationCode}`);
     res.status(200).json({
       message: 'Registration successful. Please check your email for the verification code.',
       userId: newUserId,
     });
-
-    //res.json({ success: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-    // Route: /api/login
-    app.post('/api/login', async (req, res) => {
-      // Incoming: Username, Password
-      // Outgoing: UserId, FirstName, LastName, error
 
-      let error = '';
+// Route: /api/login
+app.post('/api/login', async (req, res) => {
+  const { Username, Password } = req.body;
 
-      const { Username, Password } = req.body;
+  try {
+    const result = await db.collection('Users').findOne({ Username: Username });
 
-      try {
-        const result = await db.collection('Users').findOne({ Username: Username, Password: Password });
+    if (result) {
+      // Check if the password matches using bcryptjs
+      const passwordMatch = await bcrypt.compare(Password, result.Password);
 
-        if (result) {
-          const id = result.UserId;
-          const fn = result.FirstName;
-          const ln = result.LastName;
-          const verified = result.Verified;
-         
-          try {
-            await db.collection('Users').updateOne(
-              { UserId: id },
-              { $set: { lastLogin: new Date() } }
-            );
-          } catch (updateError) {
-            console.error("Error updating last login:", updateError);
-          }
+      if (passwordMatch) {
+        const {
+          UserId: id,
+          FirstName: fn,
+          LastName: ln,
+          Username: username,
+          Email: email,
+          CheckInFreq: checkInFreq,
+          Verified: verified,
+          deceased,
+          createdAt,
+          lastLogin,
+        } = result;
 
-          // check if user has verified email
-          if (!verified) {
-            res.status(200).json({ id: -1, firstName: '', lastName: '', error: 'Please verify your account'});
-          } else {
-            // user is verified, allow login
-            res.status(200).json({ id: id, firstName: fn, lastName: ln, verified: verified, error: '' });
-          }
-        } else {
-          res.status(200).json({ id: -1, firstName: '', lastName: '', error: 'User not found' });
+        try {
+          await db.collection('Users').updateOne(
+            { UserId: id },
+            { $set: { lastLogin: new Date() } }
+          );
+        } catch (updateError) {
+          console.error("Error updating last login:", updateError);
         }
-      } catch (e) {
-        error = e.toString();
-        res.status(500).json({ error: error });
-      }
-    });
 
+        // Check if user has verified email
+        if (!verified) {
+          res.status(200).json({ id: -1, firstName: '', lastName: '', error: 'Please verify your account' });
+        } else {
+          res.status(200).json({
+            id,
+            firstName: fn,
+            lastName: ln,
+            username,
+            email,
+            checkInFreq,
+            verified,
+            deceased,
+            createdAt,
+            lastLogin: new Date(),
+            error: ''
+          });
+        }
+      } else {
+        // Password does not match
+        res.status(200).json({ id: -1, firstName: '', lastName: '', error: 'Invalid username/password' });
+      }
+    } else {
+      // User not found
+      res.status(200).json({ id: -1, firstName: '', lastName: '', error: 'Invalid username/password' });
+    }
+  } catch (e) {
+    console.error('Login error:', e);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 
     // Route: /api/addcard
@@ -383,56 +406,7 @@ app.post('/api/deletemessage', async (req, res) => {
   }
 });
 
-/*
-//Route: /api/addRecipients
-app.post('/api/addRecipients', (req, res) => {
-  const { firstName, lastName, email } = req.body;
 
-  const sql = 'INSERT INTO recipients (FirstName, LastName, Email) VALUES (?, ?, ?)';
-  db.query(sql, [firstName, lastName, email], (err, result) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'Failed to add recipient' });
-    }
-    res.status(201).json({ message: 'Recipient added successfully', recipientId: result.insertId });
-  });
-});
-
-//Route: /api/editRecipients
-app.put('/api/editRecipients', (req, res) => {
-  const { id, firstName, lastName, email } = req.body;
-
-  const sql = 'UPDATE recipients SET FirstName = ?, LastName = ?, Email = ? WHERE RecipientID = ?';
-  db.query(sql, [firstName, lastName, email, id], (err, result) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'Failed to update recipient' });
-    }
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'Recipient not found' });
-    }
-    res.status(200).json({ message: 'Recipient updated successfully' });
-  });
-});
-
-//Route: /api/deleteRecipients
-app.delete('/api/deleteRecipients', (req, res) => {
-  const { id } = req.body;
-
-  const sql = 'DELETE FROM recipients WHERE RecipientID = ?';
-  db.query(sql, [id], (err, result) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'Failed to delete recipient' });
-    }
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'Recipient not found' });
-    }
-    res.status(200).json({ message: 'Recipient deleted successfully' });
-  });
-});
-
-*/
 
 // ADD RECIPIENT
 // Route: /api/addRecipient
@@ -451,10 +425,17 @@ app.post('/api/addRecipient', async (req, res) => {
       return res.status(404).json({ error: 'User not found.' });
     }
     const userId = user.UserId;
-
+    
+      // Generate a new recipientId by incrementing the highest existing recipientId
+      let newRecipientId = 1; // Default to 1 if no messages exist
+      const lastId = await db.collection('Recipients').find().sort({ recipientId: -1 }).limit(1).toArray();
+      if (lastId.length > 0) {
+        newRecipientId = lastId[0].recipientId + 1;
+      }
+    
     // Add the new recipient with userId to the Recipients collection
     const newRecipient = {
-      recipientId: uuidv4(),  // Generate unique ID for recipient
+      recipientId: newRecipientId,  // Generate unique ID for recipient
       userId,                 // Associate recipient with this user
       recipientName,
       recipientEmail,
@@ -469,6 +450,7 @@ app.post('/api/addRecipient', async (req, res) => {
     console.error('Error adding recipient:', error);
     res.status(500).json({ error: 'Failed to add recipient' });
   }
+  
 });
 
 
@@ -545,3 +527,36 @@ app.post('/api/checkIn', async (req,res) => {
   }
 });
 
+// GET A USERS MESSAGES
+// Route: /api/getUserMessages
+app.post('/api/getUserMessages', async (req, res) => {
+  const { userId } = req.body;
+
+  try {
+    // Ensure userId is a number
+    const userIdNumber = Number(userId);
+    if (isNaN(userIdNumber)) {
+      return res.status(400).json({ error: 'Invalid userId.' });
+    }
+
+    // Use MongoDB's aggregation framework to join Messages and Recipients
+    const messages = await db.collection('Messages').aggregate([
+      {
+        $match: { userId: userIdNumber }
+      },
+      {
+        $lookup: {
+          from: 'Recipients',
+          localField: 'messageId',
+          foreignField: 'messageId',
+          as: 'recipients'
+        }
+      }
+    ]).toArray();
+
+    res.status(200).json({ messages });
+  } catch (error) {
+    console.error('Error retrieving user messages:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
